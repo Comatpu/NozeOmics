@@ -407,6 +407,9 @@ class Workspace(Intake, ResultTables):
                     continue
                 if d.get('result_only'):
                     payload['datasets'].append(self.results_payload(p, d, comp))
+                    entry = next((e for e in p.get('intake', {}).values() if e['status'] != 'excluded' and d['id'] in e.get('dataset_ids', [])), None)
+                    if entry and entry.get('display_label'):
+                        payload['datasets'][-1]['gse_label'] = entry['display_label']
                     continue
                 full = self.assay(p['id'],d['id'])
                 si = [i for i,s in enumerate(d['samples']) if s['id'] in comp['samples']]
@@ -421,9 +424,17 @@ class Workspace(Intake, ResultTables):
                     effect = logged[:,b].mean(axis=1)-logged[:,a].mean(axis=1)
                 rp, ap = np.full(len(raw),np.nan),np.full(len(raw),np.nan)
                 current = bool(comp.get('run_id') and comp.get('result_spec_hash')==digest(comp['spec']))
+                not_tested = {}
                 if current:
                     work = self.folder()/ 'runs'/comp['run_id']
                     results = pd.read_csv(work/'results.tsv',sep='\t',dtype={'feature_id':str}).set_index('feature_id')
+                    if (work/'testing.tsv').is_file():
+                        testing = pd.read_csv(work/'testing.tsv', sep='\t', dtype=str, keep_default_na=False)
+                        not_tested = dict(zip(testing['feature_id'], testing['reason']))
+                    elif comp.get('method') in {'limma-voom · TMM', 'limma-trend'}:
+                        # Older runs used the same filters but did not save per-feature reasons.
+                        not_tested = {f['id']: 'low_expression' if d['unit'] in {'raw_count', 'estimated_count'} else 'non_variable'
+                                      for f in d['features'] if f['id'] not in results.index}
                     indexed = results.reindex([f['id'] for f in d['features']])
                     for name,array in [('logFC',effect),('AveExpr',ave),('P.Value',rp),('adj.P.Val',ap)]:
                         array[:] = pd.to_numeric(indexed[name],errors='coerce').to_numpy(float)
@@ -443,12 +454,19 @@ class Workspace(Intake, ResultTables):
                     effects.append(effect[i] if i is not None else None)
                     aves.append(ave[i] if i is not None else None)
                     sigs.append({'p_value':rp[i] if i is not None and current else None,'adj_p':ap[i] if i is not None and current else None,'status':'missing' if i is None else 'pass' if current and np.isfinite(ap[i]) and ap[i]<=.05 else 'not_significant' if current and np.isfinite(ap[i]) else 'unavailable'})
+                    if i is not None and current and not_tested.get(d['features'][i]['id']):
+                        sigs[-1]['reason'] = not_tested[d['features'][i]['id']]
+                    elif i is not None and not current:
+                        sigs[-1]['reason'] = 'pending_calculation'
                 def pack(v):
                     return base64.b64encode(gzip.compress(encoded(v),mtime=0)).decode('ascii')
                 pca_run = comp.get('pca_run_id') if comp.get('pca_spec_hash')==digest(comp['spec']) else None
                 pca = read_json(self.folder()/'runs'/pca_run/'pca.json') if pca_run else None
                 payload['datasets'].append(clean({'dataset_id':comp['id'],'source_dataset_id':d['id'],'label':comp['label'],'gse':d['gse'],'organism':d['organism'],'unit':'log2 expression','prelogged':True,'count_library_sizes':None,'samples':samples,'values':vals,'codes':codes,'original_effects':effects,'significance':sigs,'ma_points_gzip':pack(points),'ma_matrix_gzip':pack(logged[point_indices]),'statistics_current':current,'method':comp.get('method'),'included':comp['included'],'pca':pca,'a_label':comp['a_label'],'b_label':comp['b_label']}))
                 payload['datasets'][-1]['original_aves']=clean(aves)
+                intake_entry = next((e for e in p.get('intake', {}).values() if e['status'] != 'excluded' and d['id'] in e.get('dataset_ids', [])), None)
+                if intake_entry and intake_entry.get('display_label'):
+                    payload['datasets'][-1]['gse_label'] = intake_entry['display_label']
                 payload['datasets'][-1].update(classification(d['unit']))
             # Datasets without a contrast can still be inspected and have an independent sample PCA.
             used = {c['dataset_id'] for c in p['comparisons'].values()}
@@ -461,7 +479,13 @@ class Workspace(Intake, ResultTables):
                 pca=read_json(self.folder()/'runs'/d['pca_run_id']/'pca.json') if d.get('pca_run_id') and d.get('pca_selection')==d.get('included',[s['id'] for s in samples]) else None
                 payload['datasets'].append({'dataset_id':did,'source_dataset_id':did,'label':d['label']+' · no contrast','gse':d['gse'],'organism':d['organism'],'unit':d['unit'],'prelogged':d['unit']=='log2','samples':samples,'values':[[None]*len(samples) for _ in panel],'codes':[None]*len(panel),'original_effects':[None]*len(panel),'significance':[{'status':'missing','p_value':None,'adj_p':None} for _ in panel],'ma_points_gzip':base64.b64encode(gzip.compress(b'[]',mtime=0)).decode(),'ma_matrix_gzip':base64.b64encode(gzip.compress(b'[]',mtime=0)).decode(),'statistics_current':False,'included':[s['id'] for s in samples],'pca':pca,'no_contrast':True})
             for item in payload['datasets']:
-                entry=next((e for e in p.get('intake',{}).values() if e.get('gse')==item.get('gse')),None)
+                entry=next((e for e in p.get('intake',{}).values()
+                            if e.get('status') != 'excluded' and item.get('source_dataset_id') in e.get('dataset_ids',[])),None)
+                if entry is None:
+                    entry=next((e for e in p.get('intake',{}).values()
+                                if e.get('status') != 'excluded' and e.get('gse')==item.get('gse')),None)
+                if entry and entry.get('display_label'):
+                    item['gse_label']=entry['display_label']
                 item['study_title']=' '.join(entry.get('report',{}).get('title',[])) if entry else ''
                 metadata={s.get('gsm'):s for s in (entry or {}).get('samples',[])}
                 for sample in item.get('samples',[]):

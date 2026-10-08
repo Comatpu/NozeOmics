@@ -1,13 +1,14 @@
 import copy
 import tempfile
 import time
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
 import pandas as pd
 from backend.projects import Workspace
-from backend import imports
+from backend import imports, engine
 from backend.common import Problem
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,24 +142,82 @@ class IntakeTests(unittest.TestCase):
         with pd.ExcelFile(exported['path']) as workbook:
             self.assertIn('Submitted results',workbook.sheet_names)
 
+    def test_duplicate_gse_keeps_independent_groups_and_reuses_source(self):
+        first, = self.add('GSE1')
+        old = self.w.project()['intake'][first]
+        self.w.update_intake(entry_id=first, groups={'GSM0':'Group A'})
+        with patch.object(imports, 'geo_metadata') as metadata, patch.object(imports, 'download') as download:
+            second, = self.w.add_gses(accessions=['GSE1'])['entry_ids']
+            new = self.w.project()['intake'][second]
+            self.assertEqual(old['display_label'], 'GSE1 (1)')
+            self.assertEqual(new['display_label'], 'GSE1 (2)')
+            self.assertEqual(new['groups']['GSM0'], 'N/A')
+            self.assertIsNone(new['review'])
+            self.assertNotEqual(self.w.intake_fingerprint(old), self.w.intake_fingerprint(new))
+            self.w.select_intake_files(entry_id=second, file_ids=[new['files'][0]['id']], note='Reuse verified source', project_id=self.w.project()['id'])
+            deadline = time.time()+5
+            while new['files'][0]['status'] != 'downloaded' and time.time()<deadline:
+                time.sleep(.02)
+            self.assertEqual(new['files'][0]['path'], old['files'][0]['path'])
+            metadata.assert_not_called()
+            download.assert_not_called()
+        self.w.update_intake(entry_id=second, groups={'GSM0':'Group B'})
+        self.assertEqual(old['groups']['GSM0'], 'Group A')
+
+        third, = self.w.add_gses(accessions=['GSE1'])['entry_ids']
+        entries = [self.w.project()['intake'][eid] for eid in [first, second, third]]
+        decisions = []
+        for index, entry in enumerate(entries, 1):
+            entry['report']['title'] = [f'Independent entry {index}']
+            decisions.append(self.decision(entry['id'], self.result(entry)))
+        self.review(decisions)
+        payload = self.w.payload()['datasets']
+        self.assertEqual([d['gse_label'] for d in payload], ['GSE1 (1)', 'GSE1 (2)', 'GSE1 (3)'])
+        self.assertEqual([d['study_title'] for d in payload], [f'Independent entry {i}' for i in [1, 2, 3]])
+
     def test_matrix_review_uses_user_mapping_and_completes_analysis(self):
         a, = self.add('GSE1')
         self.w.update_intake(entry_id=a,groups={'GSM0':'Group A','GSM1':'Group A','GSM2':'Group B','GSM3':'Group B'})
         path=Path(self.temp.name)/'counts.tsv'
         rng=np.random.default_rng(35)
         pd.DataFrame(rng.integers(10,800,(120,4)),columns=['c0','c1','c2','c3']).assign(gene=['g'+str(i) for i in range(120)]).to_csv(path,sep='\t',index=False)
+        with path.open('a') as f:
+            f.write('0,0,0,0,low\n'.replace(',', '\t'))
         samples=[{'id':'GSM'+str(i),'gsm':'GSM'+str(i),'source_column':'c'+str(i),'tissue':'kidney','evidence':[{'source':'GEO','locator':'sample '+str(i),'value':'GSM'+str(i)}]} for i in range(4)]
         did=self.w.import_dataset(path=path,organism='mouse',gse='GSE1',recipe={'unit':'raw_count','gene_column':'gene','identifiers':'symbol'},samples=samples)['dataset']['id']
         cid=self.w.configure_comparison(dataset_id=did,groups=self.w.project()['intake'][a]['groups'])['comparison']['id']
         with self.assertRaises(Problem) as ctx:
             self.w.start_analysis(comparison_id=cid)
         self.assertEqual(ctx.exception.code,'ai_review_required')
-        self.review([self.decision(a,did)])
+        pca_started, release_pca = threading.Event(), threading.Event()
+        original_pca = engine.pca
+        def delayed_pca(*args, **kwargs):
+            pca_started.set()
+            release_pca.wait(10)
+            return original_pca(*args, **kwargs)
+        with patch.object(engine, 'pca', side_effect=delayed_pca):
+            self.review([self.decision(a,did)])
+            try:
+                self.assertTrue(pca_started.wait(10))
+                self.assertEqual(self.w.project()['stage'], 'processing')
+                self.assertEqual(self.w.payload()['datasets'], [])
+            finally:
+                release_pca.set()
+            deadline=time.time()+40
+            while self.w.project()['stage']=='processing' and time.time()<deadline:
+                time.sleep(.1)
         deadline=time.time()+40
         while self.w.project()['stage']=='processing' and time.time()<deadline:
             time.sleep(.1)
         self.assertEqual(self.w.project()['stage'],'analysis',self.w.snapshot()['jobs'])
         self.assertTrue(self.w.payload()['datasets'][0]['statistics_current'])
+        self.w.update_view(panel=['g1', 'low'])
+        sigs = self.w.payload()['datasets'][0]['significance']
+        self.assertEqual(sigs[1]['reason'], 'low_expression')
+        self.assertIsNone(sigs[1]['p_value'])
+        self.assertNotIn('reason', sigs[0])
+        run = self.w.project()['comparisons'][cid]['run_id']
+        self.assertTrue((self.w.folder()/'runs'/run/'testing.tsv').is_file())
 
 if __name__=='__main__':
     unittest.main(verbosity=2)

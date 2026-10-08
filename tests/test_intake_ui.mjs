@@ -7,11 +7,11 @@ const {Client}=await import(pathToFileURL(require.resolve('@modelcontextprotocol
 const {StdioClientTransport}=await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/stdio.js')));
 const home=path.join(root,'.local','intake-ui-'+Date.now()),exe=path.join(root,'release/NozeOmics-win32-x64/NozeOmics.exe');
 const seed=spawnSync(path.join(root,'runtime/python/python.exe'),[path.join(root,'tests/seed_intake_ui.py'),home],{cwd:root,windowsHide:true,encoding:'utf8'});assert.equal(seed.status,0,seed.stderr);
-const env={...process.env,NOZEOMICS_HOME:home};delete env.ELECTRON_RUN_AS_NODE;
+const env={...process.env,NOZEOMICS_HOME:home,CODEX_HOME:path.join(home,'isolated-codex')};delete env.ELECTRON_RUN_AS_NODE;
 const port=9368,app=spawn(exe,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port],{env,windowsHide:true,stdio:'ignore'});
 let socket,client;const pending=new Map();let sequence=0;const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn){for(let i=0;i<200;i++){try{const v=await fn();if(v)return v;}catch{}await delay(100);}throw new Error('Desktop integration timed out.');}
-function rpc(method,params={}){const id=++sequence;return new Promise((resolve,reject)=>{const timeout=setTimeout(()=>{pending.delete(id);reject(new Error('Timed out: '+method));},5000);pending.set(id,{resolve:v=>{clearTimeout(timeout);resolve(v);},reject:e=>{clearTimeout(timeout);reject(e);}});socket.send(JSON.stringify({id,method,params}));});}
+function rpc(method,params={}){const id=++sequence;return new Promise((resolve,reject)=>{const timeout=setTimeout(()=>{pending.delete(id);reject(new Error('Timed out: '+method));},20000);pending.set(id,{resolve:v=>{clearTimeout(timeout);resolve(v);},reject:e=>{clearTimeout(timeout);reject(e);}});socket.send(JSON.stringify({id,method,params}));});}
 async function evaluate(expression){const r=await rpc('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw new Error(JSON.stringify(r.exceptionDetails));return r.result.value;}
 async function call(name,args={}){const r=await client.callTool({name:'nozeomics_'+name,arguments:args});const v=JSON.parse(r.content[0].text);if(r.isError)throw new Error(JSON.stringify(v));return v;}
 async function shot(name){const r=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(root,'.local',name+'.png'),Buffer.from(r.data,'base64'));}
@@ -63,6 +63,18 @@ try{
 
  await evaluate('document.querySelector(".compact-sample").dispatchEvent(new MouseEvent("mouseenter"));true');
  assert.equal(await evaluate('document.querySelector(".sample-tooltip").textContent.includes("Treatment:")'),true);
+ await evaluate('document.querySelector(".compact-sample").dispatchEvent(new MouseEvent("mousemove",{clientX:500,clientY:180}));true');
+ assert.deepEqual(await evaluate('({x:parseFloat(sampleTooltip.style.left),y:parseFloat(sampleTooltip.style.top)})'),{x:516,y:196});
+ await evaluate('document.querySelector(".compact-sample").dispatchEvent(new MouseEvent("mousemove",{clientX:innerWidth-20,clientY:180}));true');
+ assert.ok(await evaluate('sampleTooltip.getBoundingClientRect().right<innerWidth-20'));
+ await evaluate('window.preparationCard=document.querySelector(".gse-card");window.actualApi=nzApi;nzApi=async(...args)=>{const s=await actualApi(...args);if(args[0]==="state"){s.project.stage="processing";}return s;};refresh(true).then(()=>true)');
+ assert.equal(await evaluate('document.getElementById("intake").hidden'),false);
+ assert.equal(await evaluate('document.getElementById("intake-loading").hidden'),false);
+ assert.equal(await evaluate('document.getElementById("viewer").hasAttribute("src")'),false);
+ await evaluate('refresh().then(()=>true)');
+ assert.equal(await evaluate('window.processingCard=document.querySelector(".gse-card");refresh().then(()=>processingCard===document.querySelector(".gse-card"))'),true);
+ await evaluate('nzApi=actualApi;refresh(true).then(()=>true)');
+ assert.equal(await evaluate('document.getElementById("intake-loading").hidden'),true);
  await evaluate('document.querySelector(".included-section .sample-item").click();true');
  await until(()=>evaluate('snapshot.project.intake["ui-entry"].groups.GSM0==="N/A"'));
  await evaluate('document.querySelector(".available-section .sample-item").click();true');

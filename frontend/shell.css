@@ -55,3 +55,5 @@ header #new{flex:none;margin-left:auto;font-size:13px;padding:8px 13px}
 #graph-controls{display:flex;align-items:center;gap:16px;flex:none;font-size:11px;color:var(--muted)}#graph-controls[hidden],#graph-controls span[hidden]{display:none}#graph-controls span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}#graph-controls svg{width:15px;height:21px;fill:none;stroke:currentColor;stroke-width:1.3}#graph-controls .mouse-button{fill:currentColor;stroke:none}
 
 .app-version{padding:6px 10px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--border)}
+
+#intake{position:relative}#intake-loading{position:absolute;inset:0;z-index:600;background:#ffffffd9;backdrop-filter:blur(1px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;font-size:13px;color:#68758a;cursor:progress}#intake-loading[hidden]{display:none}

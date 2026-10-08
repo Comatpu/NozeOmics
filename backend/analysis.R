@@ -46,6 +46,8 @@ if (counts) {
   if (sum(keep) < 2) stop('Too few variable genes for differential analysis')
   fit <- eBayes(lmFit(logvalues[keep,,drop=FALSE], design), trend=TRUE)
 }
+testing <- data.frame(feature_id=rownames(values), reason=ifelse(keep, '', if (counts) 'low_expression' else 'non_variable'))
+write.table(testing, file.path(work, 'testing.tsv'), sep='\t', quote=FALSE, row.names=FALSE)
 result <- topTable(fit, coef=ncol(design), number=Inf, sort.by='none', adjust.method='BH')
 result$feature_id <- rownames(result)
 write.table(result, file.path(work, 'results.tsv'), sep='\t', quote=FALSE, row.names=FALSE)

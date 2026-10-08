@@ -20,10 +20,10 @@ class Intake:
         return entry
 
     def intake_fingerprint(self, e):
-        return digest({k: e.get(k) for k in ('gse', 'groups', 'metadata_sha256', 'files', 'generation')})
+        return digest({k: e.get(k) for k in ('id', 'gse', 'groups', 'metadata_sha256', 'files', 'generation')})
 
     def add_gses(self, accessions, project_id=None, base_revision=None, **_):
-        values = list(dict.fromkeys(str(g).strip().upper() for g in accessions))
+        values = [str(g).strip().upper() for g in accessions]
         if not values or len(values) > 50 or any(not re.fullmatch(r'GSE\d+', g) for g in values):
             raise Problem('invalid_accession', 'Add 1–50 GSE accessions, for example GSE255988.')
         with self.lock:
@@ -32,23 +32,38 @@ class Intake:
                 raise Problem('project_changed', 'Open this project before adding GSEs.')
             if p.get('stage') == 'processing':
                 raise Problem('processing', 'Wait for the reviewed batch to finish.')
-            existing = {e['gse']: e for e in p.setdefault('intake', {}).values() if e['status'] != 'excluded'}
+            p.setdefault('intake', {})
             self.mutate(base_revision)
             p['stage'] = 'intake'
             created = []
             for gse in values:
-                if gse in existing:
-                    continue
+                previous = [e for e in p['intake'].values() if e['gse'] == gse]
                 eid = str(uuid.uuid4())
                 entry = {'id': eid, 'gse': gse, 'status': 'fetching', 'phase': 'Reading GEO report',
                          'created': now(), 'generation': 1, 'groups': {}, 'samples': [], 'files': [],
                          'dataset_ids': [], 'review': None, 'report': {}}
+                if previous:
+                    for index, old in enumerate(previous, 1):
+                        old.setdefault('instance_number', index)
+                        old['display_label'] = f"{gse} ({old['instance_number']})"
+                    entry['instance_number'] = max(e['instance_number'] for e in previous) + 1
+                    entry['display_label'] = f"{gse} ({entry['instance_number']})"
+                    cached = next((e for e in reversed(previous) if e.get('metadata_path') and e.get('samples')), None)
+                    if cached:
+                        for key in ('samples', 'report', 'files', 'metadata_path', 'metadata_sha256'):
+                            entry[key] = copy.deepcopy(cached[key])
+                        entry['groups'] = {s['gsm']: 'N/A' for s in entry['samples']}
+                        for f in entry['files']:
+                            f['selected'] = False
+                            f['status'] = 'downloaded' if f.get('path') and Path(f['path']).is_file() and f.get('sha256') == file_hash(f['path']) else 'not_downloaded'
+                        entry.update(status='awaiting_review', phase='Waiting for AI review')
                 p['intake'][eid] = entry
                 created.append(eid)
             self.save()
             for eid in created:
                 self.cancels[eid] = threading.Event()
-                self.pool.submit(self._collect_gse, p['id'], eid, 1)
+                if p['intake'][eid]['status'] == 'fetching':
+                    self.pool.submit(self._collect_gse, p['id'], eid, 1)
             return {'entry_ids': created, 'revision': self.state['revision']}
 
     def _collect_gse(self, pid, eid, generation):
@@ -166,9 +181,20 @@ class Intake:
                         received = {'path': str(cached), 'sha256': f['sha256']}
                         dest = cached
                     else:
-                        suffix = ''.join(Path(f['name']).suffixes[-2:])
-                        dest = self.folder(pid)/'intake'/eid/'sources'/(f['id']+suffix)
-                        received = imports.download(f['url'], dest, cancel=cancel)
+                        with self.lock:
+                            shared = [record for entry in self.project(pid).get('intake', {}).values() for record in entry.get('files', []) if record.get('url') == f['url'] and record.get('status') == 'downloaded' and record.get('path')]
+                        for record in shared:
+                            candidate = Path(record['path'])
+                            if candidate.is_file() and file_hash(candidate) == record.get('sha256'):
+                                cached = candidate
+                                break
+                        if cached.is_file() and any(record.get('path') == str(cached) and record.get('sha256') == file_hash(cached) for record in shared):
+                            received = {'path': str(cached), 'sha256': file_hash(cached)}
+                            dest = cached
+                        else:
+                            suffix = ''.join(Path(f['name']).suffixes[-2:])
+                            dest = self.folder(pid)/'intake'/eid/'sources'/(f['id']+suffix)
+                            received = imports.download(f['url'], dest, cancel=cancel)
                     with self.lock:
                         f.update(received, status='downloaded', bytes=dest.stat().st_size)
                         f.pop('error', None)
@@ -257,6 +283,8 @@ class Intake:
             if not decisions or len({x['entry_id'] for x in decisions}) != len(decisions):
                 raise Problem('invalid_review', 'Supply unique GSE review decisions.')
             checked = []
+            dataset_owners = {did: e['id'] for e in p['intake'].values() if e['status'] == 'approved'
+                              for did in e.get('dataset_ids', [])}
             for decision in decisions:
                 e = self.intake_entry(p, decision['entry_id'])
                 if e['status'] == 'fetching' or decision.get('review_fingerprint') != self.intake_fingerprint(e):
@@ -268,6 +296,10 @@ class Intake:
                 if verdict == 'approve':
                     if not ids or len(set(ids)) != len(ids):
                         raise Problem('dataset_required', 'Import the verified data before approving this GSE.')
+                    for did in ids:
+                        if did in dataset_owners and dataset_owners[did] != e['id']:
+                            raise Problem('dataset_already_reviewed', 'Repeated GSE entries need independently imported datasets and comparisons; source files may be shared.')
+                        dataset_owners[did] = e['id']
                     if any(f.get('selected') and f['status'] in {'queued', 'downloading'} for f in e['files']):
                         raise Problem('download_running', 'Wait for the selected source files before approving.')
                     if any(f.get('selected') and f['status'] != 'downloaded' for f in e['files']) and not decision.get('source_limitations'):
@@ -311,6 +343,8 @@ class Intake:
                                 if c['dataset_id'] == did and not p['datasets'][did].get('result_only') and not (c.get('run_id') and c.get('result_spec_hash') == digest(c['spec'])):
                                     # A failed historical run must not make retries return that same job.
                                     self.start_analysis(comparison_id=c['id'], request_id=str(uuid.uuid4()))
+                                if c['dataset_id'] == did and not p['datasets'][did].get('result_only') and not (c.get('pca_run_id') and c.get('pca_spec_hash') == digest(c['spec'])):
+                                    self.start_analysis(comparison_id=c['id'], kind='pca', n_top=500, request_id=str(uuid.uuid4()))
                     self.finish_intake(p)
                 except Exception as exc:
                     p['stage'] = 'intake'
@@ -323,7 +357,7 @@ class Intake:
             return
         active = [e for e in p.get('intake', {}).values() if e['status'] != 'excluded']
         keep = {did for e in active for did in e['dataset_ids']}
-        jobs = [j for j in self.state['jobs'].values() if j['project_id'] == p['id'] and j.get('dataset_id') in keep and j.get('kind') == 'differential']
+        jobs = [j for j in self.state['jobs'].values() if j['project_id'] == p['id'] and j.get('dataset_id') in keep and j.get('kind') in {'differential', 'pca'}]
         if any(j['status'] in {'queued', 'running'} for j in jobs):
             return
         for e in active:
@@ -331,6 +365,9 @@ class Intake:
                 if c['dataset_id'] in e['dataset_ids'] and not (c.get('run_id') and c.get('result_spec_hash') == digest(c['spec'])):
                     failure = next((j for j in reversed(jobs) if j.get('comparison_id') == c['id']), {})
                     e.update(status='returned', phase='Analysis needs correction', reason=failure.get('error', {}).get('message', 'Current analysis results are not available.'))
+                elif c['dataset_id'] in e['dataset_ids'] and not p['datasets'][c['dataset_id']].get('result_only') and not (c.get('pca_run_id') and c.get('pca_spec_hash') == digest(c['spec'])):
+                    failure = next((j for j in reversed(jobs) if j.get('comparison_id') == c['id'] and j['kind'] == 'pca'), {})
+                    e.update(status='returned', phase='Analysis needs correction', reason=failure.get('error', {}).get('message', 'Initial PCA results are not available.'))
         if all(e['status'] == 'approved' for e in active):
             p.update(stage='analysis', published_dataset_ids=list(keep))
         else:
