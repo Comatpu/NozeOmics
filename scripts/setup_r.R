@@ -1,0 +1,6 @@
+options(repos=c(CRAN='https://cloud.r-project.org'), timeout=600)
+if (!requireNamespace('BiocManager', quietly=TRUE)) install.packages('BiocManager', type='binary')
+options(repos=c(BioCsoft='https://bioconductor.org/packages/3.21/bioc', CRAN='https://cloud.r-project.org'))
+install.packages(c('limma', 'edgeR'), type='binary')
+stopifnot(requireNamespace('limma', quietly=TRUE), requireNamespace('edgeR', quietly=TRUE))
+cat('NozeOmics R engine ready\n')

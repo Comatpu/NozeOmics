@@ -1,0 +1,9 @@
+{
+  "name": "nozeomics",
+  "version": "0.2.0",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "description": "Local gene-expression analysis workspace",
+  "author": "NozeOmics",
+  "license": "MIT"
+}

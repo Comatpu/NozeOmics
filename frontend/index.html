@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>NozeOmics</title><link rel="stylesheet" href="shell.css"></head><body>
+<header>
+<div class="brand-menu-wrap"><button id="brand-menu-toggle" class="brand-trigger" aria-label="Application menu" aria-haspopup="menu" aria-expanded="false"><img class="brand-icon" src="/assets/Omics.png" alt=""><span class="brand-name"><b>Noze</b><span>Omics</span></span></button><div id="brand-menu" class="brand-menu" role="menu" hidden><div id="app-version" class="app-version"></div><button id="ai-connection" role="menuitem">AI connection</button><button id="reload-app" role="menuitem">Reload</button><button id="quit-app" role="menuitem">Quit</button></div></div>
+<div class="location"><button id="back-home" hidden><span aria-hidden="true">‹</span><span id="project-title"></span></button></div><span id="status" role="status"></span><div id="graph-controls" hidden><span><svg viewBox="0 0 20 26" aria-hidden="true"><rect x="2" y="1" width="16" height="24" rx="8"/><path d="M2 10h16M10 1v9"/><rect class="mouse-button" x="8.5" y="4" width="3" height="6" rx="1.5"/></svg>Move</span><span id="graph-add" hidden><svg viewBox="0 0 20 26" aria-hidden="true"><rect x="2" y="1" width="16" height="24" rx="8"/><path d="M2 10h16M10 1v9"/><path class="mouse-button" d="M9 2A7 7 0 0 0 3 9h6Z"/></svg>Add gene</span></div><button id="new" class="primary">＋ New project</button>
+</header>
+<main id="home" class="screen"><div id="project-list" class="project-list"></div></main>
+<main id="intake" class="screen" hidden>
+
+<div class="intake-layout"><aside class="intake-sidebar"><form id="gse-form"><label for="gse-input">Add GSEs</label><input id="gse-input" type="text" placeholder="GSE255988" spellcheck="false"><button id="add-gses" class="primary" type="submit">＋ Add GSE</button></form><div id="gse-list" class="gse-list"></div><button id="intake-complete" type="button" class="primary"></button></aside><section id="gse-detail" class="gse-detail"></section></div>
+
+</main>
+<section id="analysis" class="analysis-screen" hidden><div class="subhead"><span id="panel-name"></span><span id="direction"></span></div><div id="analysis-loading" hidden role="status"><div class="analysis-spinner"></div><span>Loading…</span></div><iframe id="viewer" title="Gene-expression explorer" hidden></iframe></section>
+<dialog id="modal"><form method="dialog"><button class="close" aria-label="Close">×</button></form><div id="modal-body"></div></dialog><div id="toast" role="status" hidden></div>
+<script src="bootstrap.js"></script><script src="shell.js"></script><script src="auto-analysis.js"></script></body></html>

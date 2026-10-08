@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict');
+const path=require('node:path');
+const {workspaceHome}=require('../desktop/workspace-home.cjs');
+const profile='C:\\Users\\example',appdata=path.join(profile,'AppData','Roaming');
+const base={USERPROFILE:profile,APPDATA:appdata};
+assert.equal(workspaceHome(base),path.join(profile,'NozeOmics'));
+assert.equal(workspaceHome({...base,NOZEOMICS_HOME:path.join(appdata,'NozeOmics')}),workspaceHome(base));
+assert.equal(workspaceHome({...base,NOZEOMICS_HOME:path.join(appdata,'NOZEOMICS')}),workspaceHome(base));
+const custom=path.resolve('.local/isolated');
+assert.equal(workspaceHome({...base,NOZEOMICS_HOME:custom}),custom);
+console.log('PASS: desktop/MCP share one home; legacy settings map to it; isolated workspaces remain isolated.');

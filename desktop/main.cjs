@@ -1,0 +1,33 @@
+const {app,BrowserWindow,Tray,Menu,ipcMain,dialog,shell}=require('electron');
+const {spawn}=require('node:child_process');const fs=require('node:fs');const path=require('node:path');
+const {workspaceHome}=require('./workspace-home.cjs');
+const {createAIConnection}=require('./ai-connection.cjs');
+const root=path.resolve(__dirname,'..'),home=workspaceHome();app.setPath('userData',home);
+let win,tray,service,quitting=false,stopped=false,liveConnection;
+const legacyAliases=[];
+function clearLegacyAliases(){for(const file of legacyAliases){try{const c=JSON.parse(fs.readFileSync(file,'utf8'));if(c.pid===liveConnection?.pid&&c.token===liveConnection?.token)fs.unlinkSync(file);}catch{}}}
+if(!app.requestSingleInstanceLock()){app.quit();}else if(process.argv.includes('--quit')){app.quit();}else{
+ app.on('second-instance',(_event,args)=>{if(args.includes('--quit')){app.quit();return;}if(!args.includes('--background')){win?.show();win?.focus();}});
+ app.on('window-all-closed',()=>{});app.on('before-quit',event=>{if(stopped)return;event.preventDefault();if(quitting)return;quitting=true;(async()=>{if(liveConnection){try{await fetch(liveConnection.url+'/api/shutdown',{method:'POST',headers:{Authorization:'Bearer '+liveConnection.token,'Content-Type':'application/json'},body:'{}'});}catch{}}for(let i=0;i<150&&service?.exitCode===null;i++)await new Promise(r=>setTimeout(r,100));if(service?.exitCode===null)service.kill();clearLegacyAliases();stopped=true;app.quit();})();});
+ app.whenReady().then(async()=>{fs.mkdirSync(home,{recursive:true});const logfile=fs.openSync(path.join(home,'service.log'),'a');const python=path.join(root,'runtime','python','python.exe');service=spawn(python,['-m','backend.server','--root',root,'--home',home],{cwd:root,windowsHide:true,stdio:['ignore',logfile,logfile],env:{...process.env,LC_ALL:'C'}});let connection;
+  for(let i=0;i<600;i++){await new Promise(r=>setTimeout(r,100));try{connection=JSON.parse(fs.readFileSync(path.join(home,'connection.json'),'utf8'));const r=await fetch(connection.url+'/health');if(r.ok&&connection.pid===service.pid)break;connection=null;}catch{connection=null;}}
+  if(!connection){dialog.showErrorBox('NozeOmics could not start','Open service.log in '+home+' for details.');app.quit();return;}
+  liveConnection=connection;
+  const aiConnection=createAIConnection({root,home,config});
+  ipcMain.handle('connect-ai',(_event,mode)=>aiConnection.setup(['auto','status'].includes(mode)?mode:'connect'));
+  // Already-running adapters still read their old AppData descriptor. They
+  // receive the shared service address; all new adapters resolve the new home.
+  try{const migration=JSON.parse(fs.readFileSync(path.join(home,'storage-migration.json'),'utf8'));for(const source of migration.sources){try{const file=path.join(source.home,'connection.json');fs.writeFileSync(file,JSON.stringify({...connection,forwarded:true}));legacyAliases.push(file);}catch(error){fs.appendFileSync(path.join(home,'service.log'),'Legacy connection forwarding: '+error.message+'\n');}}}catch{}
+  ipcMain.handle('app-ready',()=>{if(process.env.NOZEOMICS_STARTUP_RECEIPT){const receipt=process.env.NOZEOMICS_STARTUP_RECEIPT;fs.writeFileSync(receipt+'.tmp',JSON.stringify({version:app.getVersion(),root}));fs.renameSync(receipt+'.tmp',receipt);delete process.env.NOZEOMICS_STARTUP_RECEIPT;}return true;});
+  win=new BrowserWindow({width:1450,height:940,minWidth:800,minHeight:600,title:'NozeOmics',icon:path.join(root,'assets','Omics.ico'),show:!process.argv.includes('--background'),webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});win.setMenuBarVisibility(false);
+  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(event,url)=>{if(new URL(url).origin!==connection.url)event.preventDefault();});win.on('close',e=>{if(!quitting){e.preventDefault();win.hide();}});await win.loadURL(connection.url);
+  tray=new Tray(path.join(root,'assets','Omics.ico'));tray.setToolTip('NozeOmics');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open NozeOmics',click:()=>win.show()},{label:'Quit NozeOmics',click:()=>app.quit()}]));tray.on('double-click',()=>win.show());
+  ipcMain.handle('choose-file',async(_e,filters)=>{const result=await dialog.showOpenDialog(win,{properties:['openFile'],filters});return result.canceled?null:result.filePaths[0];});
+  ipcMain.handle('reveal',async(_e,file)=>{if(typeof file!=='string')throw new Error('Invalid file path.');const resolved=path.resolve(file),relative=path.relative(home,resolved);if(relative.startsWith('..'+path.sep)||relative==='..'||path.isAbsolute(relative))throw new Error('Open files from this workspace only.');if(!fs.existsSync(resolved))throw new Error('This file no longer exists. Save it again.');const folder=fs.statSync(resolved).isDirectory()?resolved:path.dirname(resolved);const error=await shell.openPath(folder);if(error)throw new Error(error);});
+  ipcMain.handle('quit',()=>{setImmediate(()=>app.quit());return true;});
+  function config(){const portable=process.env.NOZEOMICS_LAUNCHER;const command=portable||(app.isPackaged?process.execPath:path.join(root,'desktop','dev-node.cmd'));const args=portable?['--mcp']:(app.isPackaged?[path.join(root,'mcp','adapter.cjs')]:[]);const server={command,args,env:{ELECTRON_RUN_AS_NODE:'1',NOZEOMICS_HOME:home,NOZEOMICS_EXE:portable||process.execPath}};return {mcpServers:{nozeomics:server}};}
+  function toml(){const c=config().mcpServers.nozeomics;return '[mcp_servers.nozeomics]\ncommand = '+JSON.stringify(c.command)+'\nargs = '+JSON.stringify(c.args)+'\n\n[mcp_servers.nozeomics.env]\nELECTRON_RUN_AS_NODE = "1"\nNOZEOMICS_HOME = '+JSON.stringify(home)+'\nNOZEOMICS_EXE = '+JSON.stringify(c.env.NOZEOMICS_EXE)+'\n';}
+  ipcMain.handle('connection',()=>({config:config(),instructions:'Codex: add the following section to your config.toml, preserving your existing settings.\n\n'+toml()+'\nOther desktop MCP clients: use the generated mcp-config.json.\nThe bundled plugin folder contains the workflow skill.'}));
+  ipcMain.handle('save-connection',async()=>{const dest=path.join(home,'AI connection');fs.mkdirSync(dest,{recursive:true});fs.writeFileSync(path.join(dest,'mcp-config.json'),JSON.stringify(config(),null,2));fs.writeFileSync(path.join(dest,'codex-config.toml'),toml());fs.cpSync(path.join(root,'plugin'),path.join(dest,'nozeomics-plugin'),{recursive:true});fs.writeFileSync(path.join(dest,'nozeomics-plugin','.mcp.json'),JSON.stringify(config(),null,2));return path.join(dest,'codex-config.toml');});
+ }).catch(e=>{dialog.showErrorBox('NozeOmics',String(e));app.quit();});
+}

@@ -1,0 +1,23 @@
+# Personal workspaces, analysis inputs and secrets
+.local/
+.venv/
+NozeOmics_data/
+fixtures/
+.env
+.env.*
+*.pem
+connection.json
+workspace.json
+*.nozeomics.zip
+
+# Generated applications, vendor runtimes and build dependencies
+.build/
+release/
+runtime/
+node_modules/
+mcp/adapter.cjs
+__pycache__/
+*.py[cod]
+*.log
+*.exe
+*.zip

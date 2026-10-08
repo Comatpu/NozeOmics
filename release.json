@@ -1,0 +1,8 @@
+{
+  "version": "0.2.0",
+  "runtime_id": "windows-x64-r1",
+  "launcher_protocol": 1,
+  "data_schema": 1,
+  "repository": "Comatpu/NozeOmics-releases",
+  "channel": "stable"
+}

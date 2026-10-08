@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const script=fs.readFileSync('frontend/explorer.js','utf8'),start=script.indexOf('const pcaCache=new Map();'),end=script.indexOf('for(const d of datasets)rememberPCA',start),store=new Map(),ctx=vm.createContext({Map,JSON,localStorage:{getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)}});vm.runInContext(script.slice(start,end),ctx);
+const run=s=>vm.runInContext(s,ctx);
+run("var d={dataset_id:'gse-comparison'};rememberPCA(d,{n_top:500,sample_ids:['a','b'],points:[{x:1,y:2}]});rememberPCA(d,{n_top:1000,sample_ids:['a','b'],points:[{x:3,y:4}]});");
+assert.equal(run("cachedPCA(d,500,['b','a']).points[0].x"),1);
+assert.equal(run("cachedPCA(d,1000,['a','b']).points[0].x"),3);
+assert.equal(run("cachedPCA(d,2000,['a','b'])"),null);
+assert.equal(run("cachedPCA(d,500,['a'])"),null);
+run('pcaCache.clear()');assert.equal(run("cachedPCA(d,500,['a','b']).points[0].x"),1);
+console.log('PASS: Independent PCA feature caches, selection isolation and persisted cache reuse.');
